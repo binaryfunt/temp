@@ -1,0 +1,63 @@
+name: Sync master
+
+on:
+  # schedule:
+  #   - cron: '43 05 * * 4'  # 05:43 UTC every Thursday
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to merge into master
+        required: true
+  # push:
+  #   branches:
+  #     - master
+  #     - '8.*.x'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BRANCH: ${{ inputs.branch || '8.1.x' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        uses: cylc/release-actions/configure-git@v1
+
+      - name: Attempt merge
+        id: merge
+        continue-on-error: true
+        run: git merge "origin/${{ env.BRANCH }}"
+
+      - name: Diff
+        id: diff
+        if: steps.merge.outcome == 'success'
+        continue-on-error: true
+        run: |
+          if [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]; then
+            echo "::notice::No changes"
+            exit 0
+          fi
+          git diff HEAD^ --exit-code --stat
+
+      - name: Create deconflict branch
+        if: steps.merge.outcome == 'failure'
+        run: |
+          git merge --abort
+          NEW_BRANCH="${BRANCH}-deconflict"
+          git checkout -b "$NEW_BRANCH" "origin/${BRANCH}"
+          echo "BRANCH=${NEW_BRANCH}" >> $GITHUB_ENV
+
+      - name: Open PR
+        if: steps.merge.outcome == 'failure' || steps.diff.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create --head "$BRANCH" \
+            --title "🤖 ${BRANCH} -> master" --body ""
+            
+          gh pr edit "$BRANCH" --add-label "sync" || true
